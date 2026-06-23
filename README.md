@@ -1,50 +1,32 @@
-## Práctica 08 - Microservicios
+## Práctica 08 - Microservicios y PWA
 
-# Hipótesis
+Esta práctica separa la autoridad de asientos en un `ticketing_service` y deja al servidor como `API Gateway`. La PWA sigue siendo el cliente visual, y el dashboard convive con ella sin tocar la lógica de venta.
 
-Comprendiendo que los microservicios son funciones separadas al funcionamiento y vida del sistema, que involucran acciones o llamadas, como procesos siempre activos o dormidos que se llaman ocacionalmente.
+## Cambios frente a la Práctica 07
 
-Como tratamos un entorno de alta afluencia con resultados inmediatos, lo mejor es que el microservicio se mantenga activo en todo momento.
+- El servidor ya no decide los asientos: sólo enruta y expone API.
+- El `ticketing_service` mantiene el estado real de reservas, compras y disponibilidad.
+- La PWA se sirve en `/pwa/` y el dashboard en `/`.
 
-# Planteamiento de la práctica.
+## Funcionamiento
 
-Siguiendo prácticas anteriores se plantea migrar el Ticketing Service ya desarrollado en un microservicio en regla.
+- `server` en `8080`: dashboard, PWA y API.
+- `ticketing_service` en `7000`: autoridad de asientos.
+- `frontend` en `80`: Nginx para archivos estáticos y proxy a `/api/`.
 
-Lo que implica que el servicio de tickets se convierta en la autoridad que maneja el mapa de memoria de asientos, los cambios y actualizaciones. Reduciendo la autoridad del servidor, modificandolo para que actue como un API Gateway (punto de conexión).
+## Ejecución local
 
-## Requisitos de funcionamiento
-
-Flask>=2.0
-
-# Dockerización
-
-La Práctica 08 se despliega con tres contenedores:
-
-- `server`: API/gateway en `8080`
-- `ticketing_service`: autoridad de asientos en `7000`
-- `frontend`: Nginx estático para dashboard y PWA en `80`
-
-Arranque local:
-
-```bash
+```powershell
 docker compose up -d --build
 ```
 
-URLs resultantes:
+URLs:
 
 - Dashboard: `http://localhost/`
 - PWA: `http://localhost/pwa/`
-- API del gateway: `http://localhost/api/...`
+- API: `http://localhost/api/...`
 
-Si quieres acceso directo sin Nginx, también quedan expuestos:
+Acceso directo:
 
 - Gateway: `http://localhost:8080`
 - Ticketing service: `http://localhost:7000`
-
-La imagen del frontend sirve el dashboard en la raíz y la PWA en `/pwa/`, de forma que ambas convivan sin tocar la lógica de negocio.
-
-# Compilación 
-
-Linux
-
-Windows
