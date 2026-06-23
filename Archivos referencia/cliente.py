@@ -1,4 +1,4 @@
-# Practica 6 - Servicios
+# Practica 7 - PWA
 
 import argparse
 import json
@@ -9,6 +9,9 @@ import time
 import uuid
 
 SOCKET_TIMEOUT = 4.0
+HTTP_TIMEOUT = 5.0
+USE_HTTP = False
+API_PORT = 5001
 
 TIPO_PLATINO = "platino"
 TIPO_PREFERENTE = "preferente"
@@ -55,14 +58,27 @@ def monitor_server_health(host, port):
     # Monitorea cierre/agotamiento para cortar todos los hilos clientes de forma limpia.
     while not sold_out_event.is_set():
         try:
-            response = send_request(
-                host,
-                port,
-                {
-                    "type": "HEALTH",
-                    "request_id": str(uuid.uuid4()),
-                },
-            )
+            if USE_HTTP:
+                # use availability endpoint to detect closure
+                from urllib.request import urlopen, Request
+                from urllib.error import URLError
+
+                req = Request(f"http://{host}:{API_PORT}/api/availability", method="GET")
+                try:
+                    with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        response = {"type": "AVAILABILITY_RESPONSE", **data}
+                except Exception:
+                    response = {}
+            else:
+                response = send_request(
+                    host,
+                    port,
+                    {
+                        "type": "HEALTH",
+                        "request_id": str(uuid.uuid4()),
+                    },
+                )
 
             if response.get("type") == "HEALTH_RESPONSE":
                 if response.get("sales_closed"):
@@ -105,7 +121,32 @@ def send_request(host, port, payload):
     return json.loads(response_bytes.decode("utf-8").strip())
 
 
-# Coordinator integration removed for Docker/cloud deployment.
+def http_post(host, port, path, payload):
+    from urllib.request import Request, urlopen
+    from urllib.error import URLError, HTTPError
+
+    url = f"http://{host}:{port}{path}"
+    data = json.dumps(payload).encode("utf-8")
+    req = Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (HTTPError, URLError) as e:
+        raise
+
+
+def http_get(host, port, path):
+    from urllib.request import Request, urlopen
+    from urllib.error import URLError, HTTPError
+
+    url = f"http://{host}:{port}{path}"
+    req = Request(url, method="GET")
+    try:
+        with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (HTTPError, URLError) as e:
+        raise
+
 
 
 def send_control_message(sock_file, payload):
@@ -121,6 +162,40 @@ def read_control_message(sock_file):
 
 
 def register_and_wait_start(host, port, client_id, client_type, buyers_count):
+    if USE_HTTP:
+        # Register via HTTP API and wait for sale to open
+        try:
+            reg_payload = {"client_id": client_id, "client_type": client_type, "buyers": buyers_count}
+            resp = http_post(host, API_PORT, "/api/register_client", reg_payload)
+            with terminal_lock:
+                print(f"Registrado via HTTP como {client_id}. {resp.get('connected_clients')}/{resp.get('expected_clients')}")
+        except Exception as exc:
+            raise RuntimeError(f"Registro HTTP falló: {exc}")
+
+        try:
+            ready_payload = {"client_id": client_id}
+            resp = http_post(host, API_PORT, "/api/ready", ready_payload)
+            with terminal_lock:
+                print(f"READY enviado via HTTP. {resp.get('ready_clients')}/{resp.get('expected_clients')}")
+        except Exception as exc:
+            raise RuntimeError(f"READY HTTP falló: {exc}")
+
+        # Poll availability until sale opens
+        for _ in range(120):
+            try:
+                av = http_get(host, API_PORT, "/api/availability")
+                sale_status = av.get("sale_status") or {}
+                state = sale_status.get("state")
+                if state == "open" or sale_status.get("sales_open"):
+                    with terminal_lock:
+                        print("START recibido (HTTP): venta abierta")
+                    return
+            except Exception:
+                pass
+            time.sleep(0.5)
+        raise RuntimeError("Timeout esperando START (HTTP)")
+
+    # socket mode (original behavior)
     with socket.create_connection((host, port), timeout=SOCKET_TIMEOUT) as sock:
         sock.settimeout(None)
         with sock.makefile("rwb") as sock_file:
@@ -170,6 +245,12 @@ def register_and_wait_start(host, port, client_id, client_type, buyers_count):
 
 def notify_client_done(host, port, client_id):
     try:
+        if USE_HTTP:
+            # no HTTP endpoint for CLIENT_DONE; log and return
+            with terminal_lock:
+                print("CLIENT_DONE (HTTP mode): skipping socket notification")
+            return
+
         response = send_request(
             host,
             port,
@@ -215,7 +296,10 @@ def buyer_worker(local_buyer_number, host, port, client_id, client_type):
         attempts += 1
         request_started = time.perf_counter()
         try:
-            request_response = send_request(host, port, request_payload)
+            if USE_HTTP:
+                request_response = http_post(host, API_PORT, '/api/request_ticket', request_payload)
+            else:
+                request_response = send_request(host, port, request_payload)
             consecutive_network_errors = 0
         except Exception:
             with stats_lock:
@@ -251,6 +335,10 @@ def buyer_worker(local_buyer_number, host, port, client_id, client_type):
         if not reservation_id:
             continue
 
+        payment_pause = random.uniform(1.0, 5.0)
+        time.sleep(payment_pause)
+        wait_random_accum += payment_pause
+
         purchase_payload = {
             "type": "PURCHASE",
             "request_id": str(uuid.uuid4()),
@@ -260,7 +348,10 @@ def buyer_worker(local_buyer_number, host, port, client_id, client_type):
 
         purchase_started = time.perf_counter()
         try:
-            purchase_response = send_request(host, port, purchase_payload)
+            if USE_HTTP:
+                purchase_response = http_post(host, API_PORT, '/api/purchase', purchase_payload)
+            else:
+                purchase_response = send_request(host, port, purchase_payload)
             consecutive_network_errors = 0
         except Exception:
             with stats_lock:
@@ -343,8 +434,10 @@ def parse_args():
     parser.add_argument("buyers", type=int, help="Cantidad de compradores (hilos) para este cliente")
     parser.add_argument("--host", default="127.0.0.1", help="Host del servidor")
     parser.add_argument("--port", type=int, default=5000, help="Puerto del servidor")
+    parser.add_argument("--use-http", action="store_true", help="Usar la API HTTP del gateway en vez del protocolo socket")
+    parser.add_argument("--api-port", type=int, default=5001, help="Puerto del API HTTP del gateway (cuando --use-http)")
     parser.add_argument("--client-id", default=None, help="Identificador único del punto de acceso")
-    parser.add_argument("--sale-id", default=None, help="ID de venta")
+    parser.add_argument("--sale-id", default=None, help="ID de venta para sincronización con el servidor")
     return parser.parse_args()
 
 
@@ -359,6 +452,9 @@ def main():
     global sales_start_ts, sales_end_ts
 
     args = parse_args()
+    global USE_HTTP, API_PORT
+    USE_HTTP = bool(args.use_http)
+    API_PORT = int(args.api_port)
     normalized_type = normalize_client_type(args.client_type)
 
     if args.buyers <= 0:
@@ -374,8 +470,6 @@ def main():
         print(f"Sale ID: {sale_id}")
         print(f"Tipo de compradores: {normalized_type}")
         print(f"Compradores a crear en este cliente: {args.buyers}")
-
-    # Coordinator integration removed — proceed without global sync.
 
     register_and_wait_start(args.host, args.port, client_id, normalized_type, args.buyers)
 

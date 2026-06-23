@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Simulación Venta - PWA</title>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="stylesheet" href="styles.css?v=8" />
+</head>
+<body>
+  <header>
+    <h1>Venta de Boletos — Cliente PWA</h1>
+    <div id="controls">
+      <label for="buyerType">Tipo de comprador:</label>
+      <select id="buyerType">
+        <option value="platino">Platino</option>
+        <option value="preferente">Preferente</option>
+        <option value="normal">General</option>
+      </select>
+      <button id="refreshBtn">Actualizar</button>
+      <button id="openCartBtn">Ver carrito (<span id="cartCount">0</span>)</button>
+      <button id="findSeatBtn" class="secondary">Encontrar mi asiento</button>
+    </div>
+  </header>
+
+  <div id="saleOverlay" class="sale-overlay">
+    <div class="sale-overlay-card">
+      <p class="sale-overlay-kicker">Estado de la venta</p>
+      <h2 id="saleOverlayTitle">Cargando estado...</h2>
+      <p id="saleOverlayText">Esperando respuesta del servidor.</p>
+      <div id="saleOverlayTimer" class="sale-overlay-timer"></div>
+      <div id="saleOverlayAction" class="sale-overlay-action hidden">
+        <button id="closeSessionBtn" class="primary-action">Cerrar sesión</button>
+      </div>
+    </div>
+  </div>
+
+  <main>
+    <section id="mapSection">
+      <h2>Mapa de Asientos</h2>
+      <div id="seatMap">Cargando...</div>
+    </section>
+
+    <div id="sideDock">
+      <aside id="cartPanel" class="dock-panel hidden">
+        <h3>Carrito</h3>
+        <div class="panel-actions">
+          <button id="buyAllBtn">Comprar seleccionados</button>
+          <button id="clearCartBtn" class="secondary">Vaciar carrito</button>
+        </div>
+        <ul id="cartList" class="entry-list"></ul>
+      </aside>
+
+      <section id="purchasesPanel" class="dock-panel">
+        <div class="dock-panel-header">
+          <h3>Mis Compras</h3>
+          <button id="findPurchasesBtn" class="secondary small">Encontrar mi asiento</button>
+        </div>
+        <ul id="purchaseList" class="entry-list"></ul>
+      </section>
+
+      <section id="finishPanel" class="dock-panel">
+        <h3>Terminar compra</h3>
+        <p class="panel-note">Cuando termines de comprar, avisa al servidor para que cierre tu ejecución de forma ordenada.</p>
+        <button id="finishPurchaseBtn" class="primary-action block">Terminar compra</button>
+      </section>
+
+      <section id="logSection" class="dock-panel">
+        <h3>Actividad</h3>
+        <div id="log"></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="app.js?v=8"></script>
+</body>
+</html>

@@ -2,79 +2,126 @@
 <html lang="es">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Simulación Venta - PWA</title>
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
-  <meta http-equiv="Pragma" content="no-cache" />
-  <meta http-equiv="Expires" content="0" />
-  <link rel="manifest" href="manifest.json" />
-  <link rel="stylesheet" href="styles.css?v=8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard de Venta</title>
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header>
-    <h1>Venta de Boletos — Cliente PWA</h1>
-    <div id="controls">
-      <label for="buyerType">Tipo de comprador:</label>
-      <select id="buyerType">
-        <option value="platino">Platino</option>
-        <option value="preferente">Preferente</option>
-        <option value="normal">General</option>
-      </select>
-      <button id="refreshBtn">Actualizar</button>
-      <button id="openCartBtn">Ver carrito (<span id="cartCount">0</span>)</button>
-      <button id="findSeatBtn" class="secondary">Encontrar mi asiento</button>
-    </div>
-  </header>
-
-  <div id="saleOverlay" class="sale-overlay">
-    <div class="sale-overlay-card">
-      <p class="sale-overlay-kicker">Estado de la venta</p>
-      <h2 id="saleOverlayTitle">Cargando estado...</h2>
-      <p id="saleOverlayText">Esperando respuesta del servidor.</p>
-      <div id="saleOverlayTimer" class="sale-overlay-timer"></div>
-      <div id="saleOverlayAction" class="sale-overlay-action hidden">
-        <button id="closeSessionBtn" class="primary-action">Cerrar sesión</button>
+  <div class="shell">
+    <div id="toastArea" class="toast-area" aria-live="polite" aria-atomic="true"></div>
+    <header class="hero">
+      <div>
+        <p class="eyebrow">SD-Practica06 · Monitoreo en nube</p>
+        <h1>Dashboard de venta concurrente</h1>
+        <p class="lead">
+          Vista en tiempo real de asientos, tickets y eventos de la simulación.
+        </p>
       </div>
-    </div>
-  </div>
+      <div class="status-stack">
+        <div id="statusBadge" class="status-badge" data-state="waiting">Esperando</div>
+        <p id="statusText" class="status-text">Conectando al servidor.</p>
+        <p class="status-subtext">Actualización por polling cada segundo.</p>
+      </div>
+    </header>
 
-  <main>
-    <section id="mapSection">
-      <h2>Mapa de Asientos</h2>
-      <div id="seatMap">Cargando...</div>
+    <section class="toolbar card">
+      <div class="field">
+        <label for="buyersInput">Compradores concurrentes</label>
+        <input id="buyersInput" type="number" min="1" max="1000" value="50" />
+      </div>
+      <div class="field">
+        <label for="buyerType">Tipo de comprador</label>
+        <select id="buyerType">
+          <option value="normal">Normal</option>
+          <option value="preferente">Preferente</option>
+          <option value="platino">Platino</option>
+        </select>
+      </div>
+      <div class="actions">
+        <button id="generateLoadBtn" class="primary">Generar carga</button>
+        <button id="restartBtn" class="secondary">Reiniciar venta</button>
+        <button id="openPwaBtn" class="secondary">Abrir PWA</button>
+      </div>
+      <div class="toolbar-meta">
+        <span>Sale ID: <strong id="saleId">n/a</strong></span>
+        <span id="lastRefresh">Sin datos</span>
+      </div>
     </section>
 
-    <div id="sideDock">
-      <aside id="cartPanel" class="dock-panel hidden">
-        <h3>Carrito</h3>
-        <div class="panel-actions">
-          <button id="buyAllBtn">Comprar seleccionados</button>
-          <button id="clearCartBtn" class="secondary">Vaciar carrito</button>
+    <main class="dashboard">
+      <div class="dashboard-main">
+        <section class="card metrics-grid" aria-label="Resumen principal">
+          <article class="metric">
+            <span>Vendidos</span>
+            <strong id="soldCount">0</strong>
+          </article>
+          <article class="metric">
+            <span>Reservados</span>
+            <strong id="reservedCount">0</strong>
+          </article>
+          <article class="metric">
+            <span>Libres</span>
+            <strong id="freeCount">0</strong>
+          </article>
+          <article class="metric accent">
+            <span>Tickets emitidos</span>
+            <strong id="ticketsCount">0</strong>
+          </article>
+          <article class="metric">
+            <span>Compradores detectados</span>
+            <strong id="buyersCreated">0</strong>
+          </article>
+          <article class="metric">
+            <span>Carga interna</span>
+            <strong id="loadStatus">Sin cargas internas activas.</strong>
+          </article>
+        </section>
+
+        <section class="card seat-types-panel">
+          <div class="panel-head">
+            <h2>Tipos de asientos</h2>
+            <p>Distribución en tiempo real de libres y comprados por tipo.</p>
+          </div>
+          <div id="seatTypeGrid" class="seat-type-grid"></div>
+        </section>
+
+        <section class="card metrics-panel">
+          <div class="panel-head">
+            <h2>Métricas del servidor</h2>
+            <p>Indicadores clave de la simulación y del servicio de tickets.</p>
+          </div>
+          <div id="metricsList" class="metrics-list"></div>
+        </section>
+      </div>
+
+      <aside class="card mini-map-panel">
+        <div class="panel-head">
+          <h2>Mapa simplificado</h2>
+          <p>Estados en tiempo real de todo el auditorio.</p>
         </div>
-        <ul id="cartList" class="entry-list"></ul>
+
+        <div class="mini-map-legend">
+          <span><i class="legend-swatch free"></i> Libre</span>
+          <span><i class="legend-swatch reserved"></i> Reservado</span>
+          <span><i class="legend-swatch sold"></i> Comprado</span>
+        </div>
+
+        <div id="miniSeatMap" class="mini-seat-map" aria-label="Mapa simplificado de asientos"></div>
+
+        <section class="card events-panel">
+          <div class="panel-head">
+            <h2>Eventos recientes</h2>
+            <p>Reservas, compras, cierres y ejecuciones internas de carga.</p>
+          </div>
+          <ul id="eventsList" class="events-list"></ul>
+        </section>
       </aside>
+    </main>
+  </div>
+  <div id="overlay" class="overlay hidden" aria-hidden="true">
+    <div class="overlay-dialog">Reiniciando venta...</div>
+  </div>
 
-      <section id="purchasesPanel" class="dock-panel">
-        <div class="dock-panel-header">
-          <h3>Mis Compras</h3>
-          <button id="findPurchasesBtn" class="secondary small">Encontrar mi asiento</button>
-        </div>
-        <ul id="purchaseList" class="entry-list"></ul>
-      </section>
-
-      <section id="finishPanel" class="dock-panel">
-        <h3>Terminar compra</h3>
-        <p class="panel-note">Cuando termines de comprar, avisa al servidor para que cierre tu ejecución de forma ordenada.</p>
-        <button id="finishPurchaseBtn" class="primary-action block">Terminar compra</button>
-      </section>
-
-      <section id="logSection" class="dock-panel">
-        <h3>Actividad</h3>
-        <div id="log"></div>
-      </section>
-    </div>
-  </main>
-
-  <script src="app.js?v=8"></script>
+  <script src="app.js"></script>
 </body>
 </html>

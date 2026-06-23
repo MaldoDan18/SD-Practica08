@@ -1,688 +1,336 @@
-// API runs on port 5001 (socket server continues using 5000 for legacy clients)
-const API_BASE = location.hostname === 'localhost' ? 'http://127.0.0.1:5001' : `${location.protocol}//${location.hostname}:5001`;
+const API_BASE = window.location.protocol === 'file:' ? 'http://127.0.0.1:8080' : '/api';
 
-const seatMap = document.getElementById('seatMap');
-const buyerTypeEl = document.getElementById('buyerType');
-const refreshBtn = document.getElementById('refreshBtn');
-const openCartBtn = document.getElementById('openCartBtn');
-const cartCount = document.getElementById('cartCount');
-const cartPanel = document.getElementById('cartPanel');
-const cartList = document.getElementById('cartList');
-const buyAllBtn = document.getElementById('buyAllBtn');
-const clearCartBtn = document.getElementById('clearCartBtn');
-const finishPurchaseBtn = document.getElementById('finishPurchaseBtn');
-const logEl = document.getElementById('log');
-const saleOverlay = document.getElementById('saleOverlay');
-const saleOverlayTitle = document.getElementById('saleOverlayTitle');
-const saleOverlayText = document.getElementById('saleOverlayText');
-const saleOverlayTimer = document.getElementById('saleOverlayTimer');
-const saleOverlayAction = document.getElementById('saleOverlayAction');
-const closeSessionBtn = document.getElementById('closeSessionBtn');
-const purchaseList = document.getElementById('purchaseList');
-const findSeatBtn = document.getElementById('findSeatBtn');
-const findPurchasesBtn = document.getElementById('findPurchasesBtn');
-const sideDock = document.getElementById('sideDock');
-const mapSectionEl = document.getElementById('mapSection');
+const elements = {
+  statusBadge: document.getElementById('statusBadge'),
+  statusText: document.getElementById('statusText'),
+  saleId: document.getElementById('saleId'),
+  sold: document.getElementById('soldCount'),
+  reserved: document.getElementById('reservedCount'),
+  free: document.getElementById('freeCount'),
+  tickets: document.getElementById('ticketsCount'),
+  buyersCreated: document.getElementById('buyersCreated'),
+  loadStatus: document.getElementById('loadStatus'),
+  seatTypeGrid: document.getElementById('seatTypeGrid'),
+  miniSeatMap: document.getElementById('miniSeatMap'),
+  metricsList: document.getElementById('metricsList'),
+  eventsList: document.getElementById('eventsList'),
+  generateBtn: document.getElementById('generateLoadBtn'),
+  buyersInput: document.getElementById('buyersInput'),
+  buyerType: document.getElementById('buyerType'),
+  refreshBtn: document.getElementById('refreshBtn'),
+  restartBtn: document.getElementById('restartBtn'),
+  openPwaBtn: document.getElementById('openPwaBtn'),
+  lastRefresh: document.getElementById('lastRefresh'),
+  toastArea: document.getElementById('toastArea'),
+};
 
-const STATE_VERSION = '8';
-
-function resetLegacyLocalStateIfNeeded(){
-  const storedVersion = localStorage.getItem('pwa_state_version');
-  if(storedVersion === STATE_VERSION) return;
-  localStorage.removeItem('pwa_cart');
-  localStorage.removeItem('pwa_purchases');
-  localStorage.setItem('pwa_state_version', STATE_VERSION);
-}
-
-let availability = [];
-let saleStatus = { state: 'loading', sales_open: false, sales_closed: false };
-let sessionClosed = false;
-let clientExecutionFinished = false;
-resetLegacyLocalStateIfNeeded();
-let cart = JSON.parse(localStorage.getItem('pwa_cart') || '[]');
-let purchases = JSON.parse(localStorage.getItem('pwa_purchases') || '[]');
-let localBuyerId = localStorage.getItem('pwa_buyer_id') || `PWA-${Math.random().toString(36).slice(2,9)}`;
-if (!localStorage.getItem('pwa_buyer_id')) localStorage.setItem('pwa_buyer_id', localBuyerId);
-let localClientId = localStorage.getItem('pwa_client_id') || `PWA-CLIENT-${Math.random().toString(36).slice(2,9)}`;
-if (!localStorage.getItem('pwa_client_id')) localStorage.setItem('pwa_client_id', localClientId);
 let pollingHandle = null;
-let highlightMySeats = false;
+let inFlight = false;
+let lastStats = null;
+let lastSoldPercentNotified = 0;
+let lastMilestoneShown = new Set();
+const progressMilestones = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
 
-const SECTION_RULES = [
-  { name: 'SECCIÓN PLATINO', rowStart: 0, rowEnd: 2, className: 'section-platino' },
-  { name: 'SECCIÓN PREFERENTE', rowStart: 3, rowEnd: 6, className: 'section-preferente' },
-  { name: 'SECCIÓN NORMAL', rowStart: 7, rowEnd: 29, className: 'section-normal' },
-];
-
-function log(msg){
-  const p = document.createElement('div');
-  p.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
-  logEl.prepend(p);
+function escapeText(value) {
+  return String(value ?? '');
 }
 
-function loadCartState(){
-  cart = Array.isArray(cart) ? cart : [];
-  purchases = Array.isArray(purchases) ? purchases : [];
-  cart = cart.filter(entry => {
-    if (!entry || !entry.seat) {
-      return false;
-    }
-    entry.selectedForPurchase = entry.selectedForPurchase !== false;
-    if (entry.status === 'sold') {
-      return false;
-    }
-    return true;
-  });
-  saveLocalState();
-}
-
-// Ensure the UI starts clean on every PWA execution to avoid stale tickets or
-// purchases from previous runs during local demos or integration tests.
-function clearPurchasesOnStartup(){
-  cart = [];
-  purchases = [];
-  saveLocalState();
-  log('Estado inicial limpiado para esta ejecución');
-}
-
-function saveLocalState(){
-  localStorage.setItem('pwa_cart', JSON.stringify(cart));
-  localStorage.setItem('pwa_purchases', JSON.stringify(purchases));
-}
-
-function seatSectionName(row){
-  return getSectionForRow(row).name.replace('SECCIÓN ', '');
-}
-
-function formatSeatLabel(entry){
-  return `${seatSectionName(entry.seat.row)} - Asiento ${entry.seat.row}-${entry.seat.col}`;
-}
-
-function isPurchasedSeat(row, col){
-  return purchases.some(entry => entry.seat && entry.seat.row === row && entry.seat.col === col && entry.status === 'sold');
-}
-
-function cartSelectedCount(){
-  return cart.filter(entry => entry.selectedForPurchase !== false).length;
-}
-
-function renderCartUI(){
-  cartCount.textContent = cart.length;
-  cartList.innerHTML = '';
-
-  cart.forEach((entry, index) => {
-    const item = document.createElement('li');
-    item.className = 'cart-entry';
-    if (entry.selectedForPurchase !== false) {
-      item.classList.add('selected');
-    }
-    if(entry.status === 'expired'){
-      item.classList.add('expired');
-    }
-
-    const controls = document.createElement('div');
-    controls.className = 'cart-entry-controls';
-
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.checked = entry.selectedForPurchase !== false;
-    checkbox.addEventListener('change', () => {
-      cart[index].selectedForPurchase = checkbox.checked;
-      saveLocalState();
-      renderCartUI();
-    });
-    if(entry.status === 'expired') checkbox.disabled = true;
-
-    const body = document.createElement('div');
-    body.className = 'cart-entry-main';
-
-    const title = document.createElement('div');
-    title.className = 'cart-entry-title';
-    title.textContent = formatSeatLabel(entry);
-
-    const meta = document.createElement('div');
-    meta.className = 'cart-entry-meta';
-    meta.textContent = `Reserva ${entry.reservation_id.slice(0, 8)} · Zona ${entry.zone}`;
-
-    body.appendChild(title);
-    body.appendChild(meta);
-
-    const releaseBtn = document.createElement('button');
-    releaseBtn.type = 'button';
-    releaseBtn.className = 'icon-button';
-    releaseBtn.textContent = 'Liberar';
-    releaseBtn.addEventListener('click', () => releaseReservation(index));
-    if(entry.status === 'expired'){
-      releaseBtn.disabled = true;
-      releaseBtn.style.opacity = '0.6';
-    }
-
-    controls.appendChild(checkbox);
-    controls.appendChild(releaseBtn);
-
-    item.appendChild(controls);
-    item.appendChild(body);
-    cartList.appendChild(item);
-  });
-
-  buyAllBtn.textContent = `Comprar seleccionados (${cartSelectedCount()})`;
-  buyAllBtn.disabled = cartSelectedCount() === 0;
-}
-
-function renderPurchasesUI(){
-  purchaseList.innerHTML = '';
-
-  if(purchases.length === 0){
-    const empty = document.createElement('li');
-    empty.className = 'empty-state';
-    empty.textContent = 'Aún no hay boletos comprados en esta fecha';
-    purchaseList.appendChild(empty);
-    return;
+function formatDuration(seconds) {
+  if (seconds === null || seconds === undefined || Number.isNaN(Number(seconds))) {
+    return 'n/a';
   }
-
-  purchases.forEach(entry => {
-    const item = document.createElement('li');
-    item.className = 'purchase-entry';
-
-    const body = document.createElement('div');
-    body.className = 'purchase-entry-main';
-
-    const title = document.createElement('div');
-    title.className = 'purchase-entry-title';
-    title.textContent = formatSeatLabel(entry);
-
-    const meta = document.createElement('div');
-    meta.className = 'purchase-entry-meta';
-    meta.textContent = `Ticket ${entry.ticket_id || 'n/a'} · ${entry.zone || 'sin zona'}`;
-
-    body.appendChild(title);
-    body.appendChild(meta);
-    item.appendChild(body);
-    purchaseList.appendChild(item);
-  });
-}
-
-function refreshPanels(){
-  renderCartUI();
-  renderPurchasesUI();
-  // ensure dock aligns with map and panels have correct width
-  try{ adjustSideDock(); }catch(e){}
-}
-
-function stopPolling(){
-  if(pollingHandle){
-    clearInterval(pollingHandle);
-    pollingHandle = null;
+  const value = Math.max(0, Number(seconds));
+  if (value < 60) {
+    return `${value.toFixed(2)} s`;
   }
-}
-
-function setControlsEnabled(enabled){
-  refreshBtn.disabled = !enabled;
-  openCartBtn.disabled = !enabled;
-  buyAllBtn.disabled = !enabled || cartSelectedCount() === 0;
-  clearCartBtn.disabled = !enabled;
-  buyerTypeEl.disabled = !enabled;
-  findSeatBtn.disabled = !enabled;
-  if(findPurchasesBtn) findPurchasesBtn.disabled = !enabled;
-  if(finishPurchaseBtn) finishPurchaseBtn.disabled = !enabled || clientExecutionFinished;
-}
-
-function showSaleClosedOverlay(reason){
-  saleOverlay.classList.remove('hidden');
-  saleOverlayTitle.textContent = '✓ La venta ha concluido';
-
-  if(reason === 'all_sold'){
-    saleOverlayText.textContent = 'Todos los asientos se vendieron exitosamente.';
-  } else if(reason === 'all_clients_done'){
-    saleOverlayText.textContent = 'La venta terminó cuando los clientes completaron su operación.';
-  } else if(reason === 'test_finished'){
-    saleOverlayText.textContent = 'La simulación de pruebas finalizó correctamente.';
-  } else {
-    saleOverlayText.textContent = 'La simulación ha finalizado.';
-  }
-
-  saleOverlayTimer.textContent = '';
-  if(saleOverlayAction) saleOverlayAction.classList.remove('hidden');
-  setControlsEnabled(false);
-  stopPolling();
-}
-
-async function closeSession(){
-  if(sessionClosed) return;
-  sessionClosed = true;
-  stopPolling();
-  clientExecutionFinished = true;
-  if(finishPurchaseBtn) finishPurchaseBtn.disabled = true;
-
-  try{
-    await fetch(API_BASE + '/api/client_disconnect', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ client_id: localClientId }),
-    });
-  }catch(err){
-    log('No se pudo notificar la desconexión: ' + err.message);
-  }
-
-  localStorage.removeItem('pwa_cart');
-  localStorage.removeItem('pwa_purchases');
-  localStorage.removeItem('pwa_state_version');
-  localStorage.removeItem('pwa_buyer_id');
-  localStorage.removeItem('pwa_client_id');
-  log('Sesión cerrada por el usuario');
-
-  if('serviceWorker' in navigator){
-    navigator.serviceWorker.getRegistration().then(reg => {
-      if(reg) return reg.unregister();
-      return null;
-    }).catch(() => {});
-  }
-
-  setTimeout(() => {
-    try{
-      window.close();
-    }catch(e){}
-    window.location.replace('about:blank');
-  }, 150);
-}
-
-async function finishPurchaseExecution(){
-  if(sessionClosed) return;
-  try{
-    const res = await fetch(API_BASE + '/api/client_done', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ client_id: localClientId }),
-    });
-    const data = await res.json();
-    if(data.status === 'ok' || data.type === 'DONE_ACK'){
-      log(`Cliente marcado como terminado (${data.done_clients}/${data.expected_clients})`);
-      clientExecutionFinished = true;
-      if(data.sale_status && data.sale_status.state === 'closed'){
-        showSaleClosedOverlay(data.sale_status.close_reason || 'all_clients_done');
-      }
-      if(finishPurchaseBtn) finishPurchaseBtn.disabled = true;
-      return;
-    }
-    log('No se pudo terminar la compra: ' + JSON.stringify(data));
-  }catch(err){
-    log('Error notificando fin de ejecución: ' + err.message);
-  }
-}
-
-function reconcileCartWithAvailability(){
-  if(!Array.isArray(cart) || !Array.isArray(availability)) return;
-  for(const entry of cart){
-    if(!entry || !entry.seat) continue;
-    const r = entry.seat.row; const c = entry.seat.col;
-    const state = (availability[r] && availability[r][c]) || 'FREE';
-    if(state === 'RESERVED'){
-      continue;
-    }
-
-    // If seat is no longer RESERVED, mark as expired and schedule removal in 5s
-    if(entry.status !== 'expired'){
-      entry.status = 'expired';
-      // prevent scheduling multiple timeouts
-      if(!entry._expirationScheduled){
-        entry._expirationScheduled = true;
-        (function(resId){
-          setTimeout(async ()=>{
-            const idx = cart.findIndex(e=>e && e.reservation_id === resId);
-            if(idx >= 0){
-              const removed = cart.splice(idx,1)[0];
-              saveLocalState();
-              refreshPanels();
-              log(`Reserva ${resId.slice(0,8)} eliminada tras expiración`);
-              try{ await fetchAvailability(); }catch(e){}
-            }
-          }, 5000);
-        })(entry.reservation_id);
-      }
-      log(`Reserva ${entry.reservation_id.slice(0,8)} marcada como expirada`);
-      saveLocalState();
-      refreshPanels();
-    }
-  }
-}
-
-function adjustSideDock(){
-  if(!sideDock || !mapSectionEl) return;
-  if(window.innerWidth <= 1100){
-    sideDock.style.position = '';
-    sideDock.style.top = '';
-    sideDock.style.width = '';
-    sideDock.style.right = '';
-    sideDock.style.maxHeight = '';
-    if(mapSectionEl) mapSectionEl.style.marginRight = '';
-    return;
-  }
-
-  // let CSS grid control the width; only clear old inline layout state
-  sideDock.style.position = '';
-  sideDock.style.top = '';
-  sideDock.style.width = '';
-  sideDock.style.right = '';
-  sideDock.style.maxHeight = '';
-  if(mapSectionEl) mapSectionEl.style.marginRight = '';
-}
-
-function updateCartUI(){
-  refreshPanels();
-}
-
-function formatCountdown(seconds){
-  const value = Math.max(0, Math.ceil(Number(seconds) || 0));
   const minutes = Math.floor(value / 60);
-  const remainingSeconds = value % 60;
-  return minutes > 0 ? `${minutes}:${String(remainingSeconds).padStart(2, '0')}` : `${remainingSeconds}s`;
+  const remaining = value - minutes * 60;
+  return `${minutes}m ${remaining.toFixed(1)}s`;
 }
 
-function updateSaleOverlay(){
-  const state = saleStatus.state || 'loading';
-  if(state === 'open'){
-    saleOverlay.classList.add('hidden');
-    if(saleOverlayAction) saleOverlayAction.classList.add('hidden');
-    saleOverlayTitle.textContent = 'Venta abierta';
-    saleOverlayText.textContent = 'Ya puedes seleccionar asientos.';
-    saleOverlayTimer.textContent = '';
-    setControlsEnabled(true);
+function formatMetricRows(metrics) {
+  const rows = [
+    ['Reservas solicitadas', metrics.request_ticket_count],
+    ['Reservas aceptadas', metrics.request_ticket_ok],
+    ['Compras procesadas', metrics.purchase_count],
+    ['Compras exitosas', metrics.purchase_ok],
+    ['Compras rechazadas', metrics.purchase_rejected],
+    ['Tickets solicitados', metrics.ticket_request_count],
+    ['Tickets emitidos', metrics.ticket_request_ok],
+    ['Tickets fallidos', metrics.ticket_request_fail],
+    ['Liberaciones por expiración', metrics.expired_releases],
+    ['Solicitudes antes del inicio', metrics.not_started_count],
+  ];
+
+  return rows.map(([label, value]) => `
+    <div class="metric-row">
+      <span>${escapeText(label)}</span>
+      <strong>${escapeText(value ?? 0)}</strong>
+    </div>
+  `).join('');
+}
+
+function renderSeatTypes(seatsByType) {
+  const order = [
+    ['platino', 'Platino'],
+    ['preferente', 'Preferente'],
+    ['normal', 'Normal'],
+  ];
+
+  elements.seatTypeGrid.innerHTML = order.map(([key, label]) => {
+    const data = seatsByType?.[key] || {};
+    const free = Number(data.free ?? 0);
+    const sold = Number(data.sold ?? 0);
+    const reserved = Number(data.reserved ?? 0);
+    const total = Number(data.total ?? free + sold + reserved);
+
+    return `
+      <article class="seat-type-card">
+        <div class="seat-type-head">
+          <h3>${escapeText(label)}</h3>
+          <span>Total ${escapeText(total)}</span>
+        </div>
+        <div class="seat-type-split">
+          <div class="seat-type-block free">
+            <span>Libres</span>
+            <strong>${escapeText(free)}</strong>
+          </div>
+          <div class="seat-type-block sold">
+            <span>Comprados</span>
+            <strong>${escapeText(sold)}</strong>
+          </div>
+        </div>
+        <p class="seat-type-foot">Reservados en tránsito: ${escapeText(reserved)}</p>
+      </article>
+    `;
+  }).join('');
+}
+
+function renderMiniMap(seatStatus) {
+  if (!seatStatus || seatStatus.length === 0) {
+    elements.miniSeatMap.innerHTML = '<div class="empty-state">Sin mapa disponible.</div>';
     return;
   }
 
-  saleOverlay.classList.remove('hidden');
-  if(saleOverlayAction) saleOverlayAction.classList.add('hidden');
-
-  if(state === 'countdown'){
-    saleOverlayTitle.textContent = 'La venta está por iniciar';
-    saleOverlayText.textContent = 'El servidor ya autorizó el inicio y está en cuenta regresiva.';
-    saleOverlayTimer.textContent = formatCountdown(saleStatus.countdown_remaining);
-    return;
-  }
-
-  if(state === 'closed'){
-    showSaleClosedOverlay(saleStatus.close_reason || 'unknown');
-    return;
-  }
-
-  if(state === 'waiting'){
-    saleOverlayTitle.textContent = 'La venta no ha iniciado';
-    saleOverlayText.textContent = 'Esperando a que el servidor autorice el inicio.';
-    saleOverlayTimer.textContent = '';
-    setControlsEnabled(false);
-    return;
-  }
-
-  saleOverlayTitle.textContent = 'Cargando estado...';
-  saleOverlayText.textContent = 'Esperando respuesta del servidor.';
-  saleOverlayTimer.textContent = '';
-  setControlsEnabled(false);
-}
-
-function getSectionForRow(row){
-  return SECTION_RULES.find(section => row >= section.rowStart && row <= section.rowEnd) || SECTION_RULES[SECTION_RULES.length - 1];
-}
-
-function getLocalReservationForSeat(row, col){
-  return cart.find(entry => entry.seat && entry.seat.row === row && entry.seat.col === col);
-}
-
-async function fetchAvailability(){
-  try{
-    const res = await fetch(API_BASE + '/api/availability');
-    if(!res.ok) throw new Error('No availability');
-    const data = await res.json();
-    saleStatus = data.sale_status || saleStatus;
-    availability = data.seat_status || [];
-    renderSeats();
-    reconcileCartWithAvailability();
-    updateSaleOverlay();
-    if(saleStatus.sales_closed){
-      showSaleClosedOverlay(saleStatus.close_reason || 'unknown');
-    }
-  }catch(err){
-    log('No se pudo obtener disponibilidad: '+err.message);
-    saleStatus = { state: 'offline', sales_open: false, sales_closed: false };
-    updateSaleOverlay();
-  }
-}
-
-async function registerPWA(){
-  try{
-    const payload = { client_id: localClientId, client_type: buyerTypeEl.value || 'normal', buyers: 1 };
-    const res = await fetch(API_BASE + '/api/register_client', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-    if(!res.ok) {
-      const txt = await res.text();
-      log('Registro PWA falló: '+txt);
-      return;
-    }
-    const data = await res.json();
-    log('PWA registrada como cliente: ' + data.client_id + ` (${data.connected_clients}/${data.expected_clients})`);
-
-    // signal ready so server can count this client
-    const readyRes = await fetch(API_BASE + '/api/ready', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ client_id: localClientId }) });
-    if(readyRes.ok){
-      const rd = await readyRes.json();
-      log('PWA READY: ' + JSON.stringify(rd));
-    }
-  }catch(err){
-    log('Error registrando PWA: '+err.message);
-  }
-}
-
-function renderSeats(){
-  seatMap.innerHTML = '';
-  const cols = 50; // COLUMNAS from server
-  seatMap.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-
-  let currentSectionName = null;
-
-  for(let r=0;r<availability.length;r++){
-    const section = getSectionForRow(r);
-
-    if(section.name !== currentSectionName){
-      const label = document.createElement('div');
-      label.classList.add('section-label');
-      label.classList.add(section.className);
-      label.textContent = section.name;
-      seatMap.appendChild(label);
-      currentSectionName = section.name;
-    }
-    
-    for(let c=0;c<Math.min(availability[r].length, cols);c++){
+  const fragment = document.createDocumentFragment();
+  const sectionBreaks = new Set([2, 6]);
+  for (let row = 0; row < seatStatus.length; row += 1) {
+    for (let col = 0; col < seatStatus[row].length; col += 1) {
       const cell = document.createElement('div');
-      cell.classList.add('seat');
-      cell.classList.add(section.className);
-      const state = availability[r][c];
-      const localReservation = getLocalReservationForSeat(r, c);
-
-      if(state === 'FREE'){
-        cell.classList.add('free');
-      } else if(state === 'RESERVED'){
-        if(localReservation && localReservation.status !== 'sold'){
-          cell.classList.add('reserved-mine');
-        } else {
-          cell.classList.add('reserved-other');
-        }
-      } else {
-        cell.classList.add('sold');
-      }
-
-      if (highlightMySeats && isPurchasedSeat(r, c)) {
-        cell.classList.add('my-purchase');
-      }
-
-      cell.textContent = `${r}-${c}`;
-      cell.dataset.row = r;
-      cell.dataset.col = c;
-      if(state !== 'SOLD'){
-        cell.addEventListener('click', onSeatClick);
-      }
-      seatMap.appendChild(cell);
+      const state = seatStatus[row][col];
+      cell.className = `mini-seat-cell ${state === 'SOLD' ? 'sold' : state === 'RESERVED' ? 'reserved' : 'free'}`;
+      cell.title = `Fila ${row + 1}, Asiento ${col + 1}: ${state}`;
+      fragment.appendChild(cell);
     }
+
+    if (sectionBreaks.has(row)) {
+      const spacer = document.createElement('div');
+      spacer.className = 'mini-seat-gap';
+      fragment.appendChild(spacer);
+    }
+  }
+
+  elements.miniSeatMap.innerHTML = '';
+  elements.miniSeatMap.appendChild(fragment);
+}
+
+function renderEvents(events) {
+  if (!events || events.length === 0) {
+    elements.eventsList.innerHTML = '<li class="empty-state">Sin eventos recientes.</li>';
+    return;
+  }
+
+  const recent = events.slice(-20).reverse();
+  elements.eventsList.innerHTML = recent.map((event) => {
+    const parts = [event.type || 'evento'];
+    if (event.reason) parts.push(`motivo=${event.reason}`);
+    if (event.zone) parts.push(`zona=${event.zone}`);
+    if (event.ticket_id) parts.push(`ticket=${event.ticket_id}`);
+    if (event.reservation_id) parts.push(`reserva=${event.reservation_id}`);
+    if (event.buyer_id) parts.push(`comprador=${event.buyer_id}`);
+    if (event.sold_count !== undefined) parts.push(`vendidos=${event.sold_count}`);
+
+    return `
+      <li class="event-item">
+        <div class="event-ts">${escapeText(event.ts || '')}</div>
+        <div class="event-body">${escapeText(parts.join(' · '))}</div>
+      </li>
+    `;
+  }).join('');
+}
+
+function renderLoadJobs(loadJobs) {
+  if (!loadJobs || loadJobs.length === 0) {
+    elements.loadStatus.textContent = 'Sin cargas internas activas.';
+    return;
+  }
+
+  const activeJob = loadJobs.find((job) => job.status === 'running') || loadJobs[0];
+  const elapsed = activeJob.elapsed ? formatDuration(activeJob.elapsed) : 'en curso';
+  const result = activeJob.result
+    ? `success=${activeJob.result.success} fail=${activeJob.result.fail}`
+    : activeJob.error || '';
+
+  elements.loadStatus.textContent = `Carga ${activeJob.job_id} · ${activeJob.status} · ${elapsed}${result ? ` · ${result}` : ''}`;
+}
+
+function showToast(title, message, variant = 'info') {
+  if (!elements.toastArea) return;
+
+  const toast = document.createElement('div');
+  toast.className = `toast-notice ${variant}`;
+  toast.innerHTML = `
+    <div class="toast-title">${escapeText(title)}</div>
+    <div class="toast-body">${escapeText(message)}</div>
+  `;
+
+  elements.toastArea.appendChild(toast);
+  window.setTimeout(() => {
+    toast.classList.add('fade-out');
+    window.setTimeout(() => toast.remove(), 280);
+  }, 4200);
+}
+
+function maybeShowProgressToast(stats) {
+  const totalSeats = 1500;
+  const soldCount = Number(stats.sold_count || 0);
+  const percent = Math.floor((soldCount / totalSeats) * 100);
+
+  for (const milestone of progressMilestones) {
+    if (percent >= milestone && !lastMilestoneShown.has(milestone)) {
+      lastMilestoneShown.add(milestone);
+      showToast('Avance de venta', `${milestone}% de los asientos vendidos (${soldCount}/${totalSeats}).`, milestone === 100 ? 'success' : 'info');
+    }
+  }
+
+  if (percent > lastSoldPercentNotified) {
+    lastSoldPercentNotified = percent;
   }
 }
 
-async function onSeatClick(evt){
-  const row = parseInt(evt.currentTarget.dataset.row, 10);
-  const col = parseInt(evt.currentTarget.dataset.col, 10);
-  const buyerType = buyerTypeEl.value;
+function showOverlay(message) {
+  const overlay = document.getElementById('overlay');
+  if (!overlay) return;
+  overlay.querySelector('.overlay-dialog').textContent = message;
+  overlay.classList.remove('hidden');
+  overlay.setAttribute('aria-hidden', 'false');
+}
 
-  // Send request_ticket to server with specific seat coordinates
-  const payload = {
-    type: 'REQUEST_TICKET',
-    buyer_id: localBuyerId,
-    buyer_type: buyerType,
-    request_id: cryptoRandomId(),
-    row: row,
-    col: col,
-  };
+function hideOverlay() {
+  const overlay = document.getElementById('overlay');
+  if (!overlay) return;
+  overlay.classList.add('hidden');
+  overlay.setAttribute('aria-hidden', 'true');
+}
 
-  try{
-    const res = await fetch(API_BASE + '/api/request_ticket', {
-      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+async function restartSale() {
+  if (!confirm('¿Seguro que desea reiniciar la venta? Esto limpiará tickets y reservas.')) return;
+  elements.restartBtn.disabled = true;
+  showOverlay('Reiniciando venta...');
+  try {
+    const resp = await fetch(`${API_BASE}/restart-sale`, { method: 'POST' });
+    if (!resp.ok) throw new Error('no_ok');
+    // keep overlay for 3.5s to show the message
+    await new Promise((r) => setTimeout(r, 3500));
+    await fetchStats();
+  } catch (err) {
+    showToast('Error', 'No fue posible reiniciar la venta.', 'danger');
+  } finally {
+    hideOverlay();
+    elements.restartBtn.disabled = false;
+  }
+}
+
+function updateSummary(stats) {
+  elements.statusBadge.textContent = stats.sales_closed ? 'Cerrada' : (stats.sales_open ? 'Abierta' : 'Esperando');
+  elements.statusBadge.dataset.state = stats.sales_closed ? 'closed' : (stats.sales_open ? 'open' : 'waiting');
+  elements.statusText.textContent = stats.sales_closed
+    ? `Cierre: ${stats.close_reason || 'n/a'}`
+    : (stats.sales_open ? 'La simulación está corriendo.' : 'La venta aún no se inicia.');
+
+  elements.saleId.textContent = stats.sale_id || 'n/a';
+  elements.sold.textContent = stats.sold_count ?? 0;
+  elements.reserved.textContent = stats.reserved_count ?? 0;
+  elements.free.textContent = stats.free_count ?? 0;
+  elements.tickets.textContent = stats.metrics?.ticket_request_ok ?? 0;
+  elements.buyersCreated.textContent = stats.buyers_created ?? 0;
+
+  elements.metricsList.innerHTML = formatMetricRows(stats.metrics || {});
+  renderSeatTypes(stats.seats_by_type || {});
+  renderMiniMap(stats.seat_status || []);
+  renderEvents(stats.recent_events || []);
+  renderLoadJobs(stats.load_jobs || []);
+
+  maybeShowProgressToast(stats);
+
+  const now = new Date();
+  elements.lastRefresh.textContent = `Actualizado ${now.toLocaleTimeString()}`;
+  lastStats = stats;
+}
+
+async function fetchStats() {
+  try {
+    const response = await fetch(`${API_BASE}/stats`, { cache: 'no-store' });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const stats = await response.json();
+    updateSummary(stats);
+  } catch (error) {
+    elements.statusBadge.textContent = 'Offline';
+    elements.statusBadge.dataset.state = 'offline';
+    elements.statusText.textContent = `No se pudo conectar con el servidor: ${error.message}`;
+    elements.lastRefresh.textContent = `Error ${new Date().toLocaleTimeString()}`;
+  }
+}
+
+async function generateLoad() {
+  if (inFlight) return;
+  inFlight = true;
+  elements.generateBtn.disabled = true;
+  elements.generateBtn.textContent = 'Generando...';
+
+  const buyers = Math.max(1, parseInt(elements.buyersInput.value || '50', 10));
+  const clientType = elements.buyerType.value || 'normal';
+
+  try {
+    const response = await fetch(`${API_BASE}/generate-load`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ buyers, client_type: clientType }),
     });
-    const data = await res.json();
-    if(data.status === 'ok' && data.reservation_id){
-      const entry = { reservation_id: data.reservation_id, seat: data.seat, zone: data.zone, status: 'reserved', ttl_seconds: data.ttl_seconds, selectedForPurchase: true };
-      cart.push(entry);
-      saveLocalState();
-      log(`Reserva OK asiento ${entry.seat.row}-${entry.seat.col} id=${entry.reservation_id}`);
-      refreshPanels();
-      renderSeats();
-    } else {
-      log('Reserva rechazada: ' + (data.message || JSON.stringify(data)));
+
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.message || payload.code || `HTTP ${response.status}`);
     }
-  }catch(err){
-    log('Error en reserva: '+err.message);
+
+    const job = payload.job || {};
+    elements.loadStatus.textContent = `Carga iniciada: ${job.job_id || 'n/a'} · ${job.buyers || buyers} compradores`;
+    await fetchStats();
+  } catch (error) {
+    elements.loadStatus.textContent = `No fue posible iniciar la carga: ${error.message}`;
+  } finally {
+    elements.generateBtn.disabled = false;
+    elements.generateBtn.textContent = 'Generar carga';
+    inFlight = false;
   }
 }
 
-function cryptoRandomId(){
-  return Math.random().toString(36).slice(2)+Date.now().toString(36);
-}
-
-async function buyAll(){
-  const selectedEntries = cart.filter(entry => entry.selectedForPurchase !== false && entry.status !== 'sold');
-  if(selectedEntries.length === 0) return log('No hay selecciones activas para comprar');
-
-  for(let i=0;i<selectedEntries.length;i++){
-    const entry = selectedEntries[i];
-    try{
-      const payload = { type:'PURCHASE', buyer_id: localBuyerId, reservation_id: entry.reservation_id, request_id: cryptoRandomId() };
-      const res = await fetch(API_BASE + '/api/purchase', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-      const data = await res.json();
-      if(data.status === 'ok'){
-        const purchaseRecord = {
-          ...entry,
-          status: 'sold',
-          ticket_id: data.ticket_id || data.ticket?.ticket_id,
-          purchased_at: new Date().toISOString(),
-        };
-        purchases.unshift(purchaseRecord);
-        cart = cart.filter(item => item.reservation_id !== entry.reservation_id);
-        saveLocalState();
-        log(`Compra OK asiento ${entry.seat.row}-${entry.seat.col} ticket=${purchaseRecord.ticket_id||'n/a'}`);
-      } else {
-        entry.status = 'failed';
-        log(`Compra fallida para ${entry.seat.row}-${entry.seat.col}: ${JSON.stringify(data)}`);
-      }
-    }catch(err){
-      entry.status = 'failed';
-      log('Error en compra: '+err.message);
-    }
-    refreshPanels();
+function startPolling() {
+  if (pollingHandle) {
+    clearInterval(pollingHandle);
   }
-  // refresh availability after purchases
-  await fetchAvailability();
+  pollingHandle = setInterval(fetchStats, 150);
 }
 
-async function releaseReservation(index){
-  const entry = cart[index];
-  if(!entry) return;
-
-  try{
-    const payload = { type: 'RELEASE_TICKET', buyer_id: localBuyerId, reservation_id: entry.reservation_id, request_id: cryptoRandomId() };
-    const res = await fetch(API_BASE + '/api/release_ticket', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
-    const data = await res.json();
-    if(data.status === 'ok'){
-      cart.splice(index, 1);
-      saveLocalState();
-      log(`Reserva liberada asiento ${entry.seat.row}-${entry.seat.col}`);
-      refreshPanels();
-      await fetchAvailability();
-      return;
-    }
-    log(`No se pudo liberar ${entry.seat.row}-${entry.seat.col}: ${JSON.stringify(data)}`);
-  }catch(err){
-    log('Error liberando reserva: '+err.message);
-  }
+elements.generateBtn.addEventListener('click', generateLoad);
+elements.restartBtn.addEventListener('click', restartSale);
+if (elements.openPwaBtn) {
+  elements.openPwaBtn.addEventListener('click', () => window.open('/pwa/index.html', '_blank', 'noopener'));
 }
 
-async function releaseAllReservations(){
-  if(cart.length === 0) return;
-  const snapshot = [...cart];
-  for(let i = 0; i < snapshot.length; i++){
-    const entry = snapshot[i];
-    const currentIndex = cart.findIndex(item => item.reservation_id === entry.reservation_id);
-    if(currentIndex >= 0){
-      await releaseReservation(currentIndex);
-    }
-  }
-}
-
-if(closeSessionBtn){
-  closeSessionBtn.addEventListener('click', closeSession);
-}
-
-if(finishPurchaseBtn){
-  finishPurchaseBtn.addEventListener('click', finishPurchaseExecution);
-}
-
-refreshBtn.addEventListener('click', fetchAvailability);
-openCartBtn.addEventListener('click', ()=>{ cartPanel.classList.toggle('hidden'); refreshPanels(); });
-buyAllBtn.addEventListener('click', buyAll);
-clearCartBtn.addEventListener('click', async ()=>{ await releaseAllReservations(); refreshPanels(); renderSeats(); log('Carrito vaciado'); });
-findSeatBtn.addEventListener('click', ()=>{
-  highlightMySeats = !highlightMySeats;
-  findSeatBtn.textContent = highlightMySeats ? 'Ocultar mis asientos' : 'Encontrar mi asiento';
-  renderSeats();
+document.addEventListener('DOMContentLoaded', async () => {
+  await fetchStats();
+  startPolling();
 });
-
-if(findPurchasesBtn){
-  findPurchasesBtn.addEventListener('click', ()=>{
-    highlightMySeats = !highlightMySeats;
-    findPurchasesBtn.textContent = highlightMySeats ? 'Ocultar mis asientos' : 'Encontrar mi asiento';
-    // sync label in header if present
-    if(findSeatBtn) findSeatBtn.textContent = highlightMySeats ? 'Ocultar mis asientos' : 'Encontrar mi asiento';
-    renderSeats();
-  });
-}
-
-// polling
-function startPolling(){
-  if(pollingHandle) clearInterval(pollingHandle);
-  pollingHandle = setInterval(fetchAvailability, 1000);
-}
-
-// service worker registration
-if('serviceWorker' in navigator){
-  navigator.serviceWorker.register('sw.js?v=8').then(()=>console.log('sw registered')).catch(()=>console.log('sw failed'));
-}
-
-// init
-loadCartState();
-// Force purchases list to be empty on each start so "Mis compras" always
-// appears empty for a fresh run / integration test. This avoids stale visual
-// state across runs while preserving cart behavior during the session.
-clearPurchasesOnStartup();
-refreshPanels();
-updateSaleOverlay();
-registerPWA();  // Register as client BEFORE fetching availability
-fetchAvailability();
-startPolling();
-
-// adjust dock on load/resize/scroll
-window.addEventListener('load', adjustSideDock);
-window.addEventListener('resize', adjustSideDock);
-window.addEventListener('scroll', () => { if(sideDock) adjustSideDock(); });
