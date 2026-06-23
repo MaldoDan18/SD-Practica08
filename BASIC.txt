@@ -1,0 +1,44 @@
+FLUJO BÁSICO (1 CLIENTE + PWA) - 08-Microservicios
+
+Terminal 1 - Ticketing Service (autoridad)
+-------------------------------------------
+Set-Location "C:\Users\malbe\Documentos\Github\Sistemas-Distribuidos\08-Microservicios"
+py ticketing_service.py --host 127.0.0.1 --port 7000
+
+
+Terminal 2 - Servidor Gateway (espera 1 cliente)
+------------------------------------------------
+Set-Location "C:\Users\malbe\Documentos\Github\Sistemas-Distribuidos\08-Microservicios"
+py servidor.py 1 --host 127.0.0.1 --port 5000 --no-gui --ticket-service-host 127.0.0.1 --ticket-service-port 7000
+
+
+Terminal 3 - Servidor estático para la PWA
+------------------------------------------
+Set-Location "C:\Users\malbe\Documentos\Github\Sistemas-Distribuidos\08-Microservicios"
+py -m http.server 8000 --directory webapp
+
+
+Navegador - Conectar PWA a la venta
+-----------------------------------
+http://127.0.0.1:8000/index.html
+
+Nota importante para la primera prueba visual:
+- Si el navegador ya tenía abierta la PWA antes de este cambio, haz una recarga dura con Ctrl+F5 o cierra y vuelve a abrir la pestaña.
+- Si todavía ves colores viejos, elimina el service worker del sitio desde las herramientas del navegador y vuelve a cargar la página.
+
+
+Prueba automática opcional (flujo completo)
+-------------------------------------------
+Set-Location "C:\Users\malbe\Documentos\Github\Sistemas-Distribuidos\08-Microservicios"
+py integration_test.py
+
+Este comando arranca Ticketing Service, Gateway y el servidor estático de la PWA,
+abre el navegador con la interfaz y deja los procesos vivos para que veas los
+cambios en pantalla. Si tenías una pestaña vieja abierta, ciérrala o usa Ctrl+F5.
+
+
+Detener servicios
+-----------------
+Ctrl+C en Terminal 3
+Ctrl+C en Terminal 2
+Ctrl+C en Terminal 1
