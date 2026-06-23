@@ -16,6 +16,33 @@ Lo que implica que el servicio de tickets se convierta en la autoridad que manej
 
 Flask>=2.0
 
+# Dockerización
+
+La Práctica 08 se despliega con tres contenedores:
+
+- `server`: API/gateway en `8080`
+- `ticketing_service`: autoridad de asientos en `7000`
+- `frontend`: Nginx estático para dashboard y PWA en `80`
+
+Arranque local:
+
+```bash
+docker compose up -d --build
+```
+
+URLs resultantes:
+
+- Dashboard: `http://localhost/`
+- PWA: `http://localhost/pwa/`
+- API del gateway: `http://localhost/api/...`
+
+Si quieres acceso directo sin Nginx, también quedan expuestos:
+
+- Gateway: `http://localhost:8080`
+- Ticketing service: `http://localhost:7000`
+
+La imagen del frontend sirve el dashboard en la raíz y la PWA en `/pwa/`, de forma que ambas convivan sin tocar la lógica de negocio.
+
 # Compilación 
 
 Linux

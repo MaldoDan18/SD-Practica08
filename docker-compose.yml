@@ -5,7 +5,8 @@ services:
     ports:
       - "80:80"
     depends_on:
-      - server
+      server:
+        condition: service_healthy
     restart: unless-stopped
 
   server:
@@ -15,8 +16,15 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - ticketing_service
+      ticketing_service:
+        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; print(json.load(urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=2)).get('status'))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   ticketing_service:
     build:
@@ -27,3 +35,9 @@ services:
     volumes:
       - ./tickets:/app/tickets
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.create_connection(('127.0.0.1', 7000), 2); s.close()"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
